@@ -6,7 +6,7 @@ use mpsc::Receiver;
 use tokio::io::AsyncWriteExt;
 use tokio::{fs::File, task::JoinSet};
 
-pub async fn generate_data(file: File, size_bytes: usize) -> io::Result<()> {
+pub async fn generate_data(file: File, size_bytes: u64) -> io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let writer_handle = writer(file, rx);
     let mut set = JoinSet::new();
@@ -51,7 +51,7 @@ async fn writer(mut file: File, rx: Receiver<String>) {
     }
 }
 
-fn generate(len: usize) -> io::Result<String> {
-    let s = Alphanumeric.sample_string(&mut rand::thread_rng(), len);
+fn generate(len: u64) -> io::Result<String> {
+    let s = Alphanumeric.sample_string(&mut rand::thread_rng(), len as usize);
     Ok(s)
 }
