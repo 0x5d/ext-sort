@@ -1,12 +1,14 @@
-use std::{
-    fs::File,
-    io::{self, Write},
-    process,
-};
+use std::{io, process};
+
+use std::sync::mpsc;
 
 use clap::{command, Parser};
-use io::{Error, ErrorKind, Result};
+use io::ErrorKind;
 use rand::distributions::{Alphanumeric, DistString};
+
+use mpsc::Receiver;
+use tokio::io::AsyncWriteExt;
+use tokio::{fs::File, task::JoinSet};
 
 const BLOCK_SIZE: usize = 4096;
 
@@ -32,7 +34,8 @@ struct Cli {
     max_mem: usize,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> io::Result<()> {
     let cli = Cli::parse();
     if cli.max_mem < BLOCK_SIZE {
         eprintln!("Max allowed memory must be larger than {BLOCK_SIZE}B");
@@ -40,11 +43,14 @@ fn main() {
     }
     if cli.generate {
         let res = match cli.size {
-            None => Result::Err(Error::new(
+            None => Result::Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 "If --generate is chosen, --size must be set.",
             )),
-            Some(s) => generate_data(&cli.file, s),
+            Some(s) => {
+                let file = File::create(cli.file.clone()).await?;
+                generate_data(file, s).await
+            }
         };
         match res {
             Err(e) => {
@@ -54,33 +60,55 @@ fn main() {
             Ok(_) => println!("File generated at {}", cli.file),
         }
     }
+    Ok(())
 }
 
-// TODO: Make concurrent.
-fn generate_data(file: &str, size_bytes: usize) -> Result<()> {
-    let mut size = size_bytes;
-    let rem = size_bytes % BLOCK_SIZE;
-    if rem > 0 {
-        size -= rem;
-        println!("Size ({size_bytes}) is not page-alligned. Truncating to {size}.");
-    }
-    let mut file = File::create(file)?;
+async fn generate_data(file: File, size_bytes: usize) -> io::Result<()> {
+    let (tx, rx) = mpsc::channel();
+    let writer_handle = writer(file, rx);
+    let mut set = JoinSet::new();
+    let mut remaining = size_bytes;
 
-    let mut thread_rng = rand::thread_rng();
-
-    let mut remaining = size;
     while remaining > 0 {
         let to_write = if remaining < BLOCK_SIZE * 4 {
             remaining
         } else {
             BLOCK_SIZE * 4
         };
-        // For some reason, Alphanumeric.sample_string hangs when generating large strings (~1GiB);
-        let string = Alphanumeric.sample_string(&mut thread_rng, to_write);
-        file.write_all(string.as_bytes())?;
+
+        let tx = tx.clone();
+        set.spawn_blocking(move || {
+            generate(to_write)
+                .and_then(|s| tx.send(s).map_err(|e| io::Error::new(ErrorKind::Other, e)))
+        });
 
         remaining -= to_write;
+        // println!("remaining: {remaining}")
     }
-    file.flush()?;
+    while let Some(res) = set.join_next().await {
+        let _ = res?;
+        // println!("Joined writer.")
+    }
+    drop(tx);
+    // println!("Waiting for writer");
+    writer_handle.await;
     Ok(())
+}
+
+async fn writer(mut file: File, rx: Receiver<String>) {
+    loop {
+        // TODO handle error.
+        match rx.recv() {
+            Ok(s) => file.write_all(s.as_bytes()).await.unwrap(),
+            Err(e) => {
+                println!("{e}");
+                return;
+            }
+        }
+    }
+}
+
+fn generate(len: usize) -> io::Result<String> {
+    let s = Alphanumeric.sample_string(&mut rand::thread_rng(), len);
+    Ok(s)
 }
