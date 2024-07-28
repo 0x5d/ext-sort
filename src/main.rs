@@ -38,26 +38,7 @@ async fn main() -> io::Result<()> {
         process::exit(1);
     }
     if cfg.generate {
-        let res = match cfg.size {
-            None => Result::Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "If --generate is chosen, --size must be set.",
-            )),
-            Some(s) => {
-                let file = File::create(cfg.file.clone()).await?;
-                generate::generate_data(file, s).await
-            }
-        };
-        match res {
-            Err(e) => {
-                eprintln!("{e}");
-                process::exit(1);
-            }
-            Ok(_) => {
-                println!("File generated at {}", cfg.file);
-                return Ok(());
-            }
-        }
+        generate(&cfg).await?
     } else if cfg.sort {
         // TODO
     } else {
@@ -65,4 +46,27 @@ async fn main() -> io::Result<()> {
         process::exit(1);
     }
     Ok(())
+}
+
+async fn generate(cfg: &Config) -> io::Result<()> {
+    let res = match cfg.size {
+        None => Result::Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "If --generate is chosen, --size must be set.",
+        )),
+        Some(s) => {
+            let file = File::create(cfg.file.clone()).await?;
+            generate::generate_data(file, s).await
+        }
+    };
+    match res {
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+        Ok(_) => {
+            println!("File generated at {}", cfg.file);
+            return Ok(());
+        }
+    }
 }
