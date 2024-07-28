@@ -9,6 +9,7 @@ mod bucket;
 mod generate;
 
 const BLOCK_SIZE: u64 = 4096;
+const ONE_GIB: u64 = 1073741824;
 
 /// Generate & sort big files.
 #[derive(Parser, Debug)]
@@ -26,8 +27,8 @@ struct Config {
     /// The size of the file to generate.
     #[arg(short, long)]
     size: Option<u64>,
-    /// The size of the file to generate.
-    #[arg(short, long, default_value_t = 536870912)]
+    /// The maxium amount of memory to be used by this program.
+    #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
     max_mem: u64,
 }
 
