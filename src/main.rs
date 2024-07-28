@@ -9,10 +9,9 @@ mod generate;
 
 const BLOCK_SIZE: u64 = 4096;
 
-/// Simple program to greet a person
+/// Generate & sort big files.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-/// Generate & sort big files.
 struct Config {
     /// If set, will generate a file of the given size at the given path.
     #[arg(short, long, default_value_t = false)]
