@@ -5,6 +5,7 @@ use std::{
 };
 use tokio::fs::File;
 
+mod bucket;
 mod generate;
 
 const BLOCK_SIZE: u64 = 4096;
