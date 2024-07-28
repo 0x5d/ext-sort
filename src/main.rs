@@ -57,7 +57,7 @@ async fn generate(cfg: &Config) -> io::Result<()> {
         )),
         Some(s) => {
             let file = File::create(cfg.file.clone()).await?;
-            generate::generate_data(file, s).await
+            generate::generate_data(file, s, cfg.max_mem).await
         }
     };
     match res {
