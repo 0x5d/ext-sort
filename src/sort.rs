@@ -4,15 +4,10 @@ use std::{
     os::unix::fs::MetadataExt,
     sync::Arc,
 };
-use tokio::{
-    // fs::File,
-    // io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    task::JoinSet,
-};
+
+use tokio::task::JoinSet;
 
 use crate::{bucket, Config};
-
-// use crate::MAX_MEM;
 
 pub async fn sort(cfg: crate::Config) -> io::Result<()> {
     let _res = split(&cfg).await?;
