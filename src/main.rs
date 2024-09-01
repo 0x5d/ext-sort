@@ -6,7 +6,9 @@ use std::{
 use tokio::fs::File;
 
 mod bucket;
+mod check;
 mod generate;
+mod sort;
 
 const BLOCK_SIZE: usize = 4096;
 const ONE_GIB: u64 = 1073741824;
@@ -21,6 +23,9 @@ struct Config {
     /// If set, will sort the file at the given path.
     #[arg(long, default_value_t = false)]
     sort: bool,
+    /// If set, will check the intermediate files at the given path.
+    #[arg(long, default_value_t = false)]
+    check_int_files: bool,
     /// The filepath.
     #[arg(short, long)]
     file: String,
@@ -30,6 +35,9 @@ struct Config {
     /// The maxium amount of memory to be used by this program.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
     max_mem: u64,
+    /// The directory to create intermediate files.
+    #[arg(short, long, default_value_t = String::from("/int"))] // 2GiB
+    int_file_dir: String,
     /// The maxium intermediate file size.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
     int_file_size: u64,
@@ -45,7 +53,9 @@ async fn main() -> io::Result<()> {
     if cfg.generate {
         generate(&cfg).await?
     } else if cfg.sort {
-        // TODO
+        sort::sort(cfg).await?
+    } else if cfg.check_int_files {
+        check::check_int_files(cfg).await?;
     } else {
         eprintln!("One of --generate or --sort must be passed.");
         process::exit(1);
