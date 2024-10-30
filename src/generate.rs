@@ -13,9 +13,9 @@ use crate::bucket::{self, Bucket};
 const POISON_PILL: &str = "shutdown now";
 
 /// Write size_bytes random data into file, using at most max_mem (RAM).
-pub async fn generate_data(file: File, size_bytes: u64, max_mem: u64) -> io::Result<()> {
+pub async fn generate_data(file: File, size_bytes: usize, max_mem: usize) -> io::Result<()> {
     let num_cores = std::thread::available_parallelism().unwrap().get();
-    let mem_per_core = max_mem / num_cores as u64;
+    let mem_per_core = max_mem / num_cores;
     let b = bucket::Bucket::new(num_cores as i32);
     let b = Arc::new(b);
     let writer_bucket = b.clone();
@@ -85,6 +85,6 @@ async fn writer(mut file: File, b: Arc<Bucket>, rx: Receiver<String>, n_threads:
     }
 }
 
-fn generate(len: u64) -> String {
-    Alphanumeric.sample_string(&mut rand::rngs::SmallRng::from_entropy(), len as usize)
+fn generate(len: usize) -> String {
+    Alphanumeric.sample_string(&mut rand::rngs::SmallRng::from_entropy(), len)
 }

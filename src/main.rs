@@ -1,4 +1,10 @@
 use clap::{command, Parser};
+use log::LevelFilter;
+use log4rs::{
+    append::console::ConsoleAppender,
+    config::{Appender, Root},
+    encode::json::JsonEncoder,
+};
 use std::{
     io::{self, ErrorKind},
     process,
@@ -11,7 +17,7 @@ mod generate;
 mod sort;
 
 const BLOCK_SIZE: usize = 4096;
-const ONE_GIB: u64 = 1073741824;
+const ONE_GIB: usize = BLOCK_SIZE * 262144;
 
 /// Generate & sort big files.
 #[derive(Parser, Debug)]
@@ -25,22 +31,22 @@ struct Config {
     sort: bool,
     /// If set, will check the intermediate files at the given path.
     #[arg(long, default_value_t = false)]
-    check_int_files: bool,
+    check: bool,
     /// The filepath.
     #[arg(short, long)]
     file: String,
     /// The size of the file to generate.
     #[arg(short, long)]
-    size: Option<u64>,
+    size: Option<usize>,
     /// The maxium amount of memory to be used by this program.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
-    max_mem: u64,
+    max_mem: usize,
     /// The directory to create intermediate files.
-    #[arg(short, long, default_value_t = String::from("/int"))] // 2GiB
+    #[arg(short, long, default_value_t = String::from("./int"))] // 2GiB
     int_file_dir: String,
     /// The maxium intermediate file size.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
-    int_file_size: u64,
+    int_file_size: usize,
     /// The concurrency level (number of writer threads) during the split phase.
     #[arg(short, long, default_value_t = 2)] // 2GiB
     split_concurrency: i32,
@@ -53,12 +59,22 @@ async fn main() -> io::Result<()> {
         eprintln!("Max allowed memory must be larger than {BLOCK_SIZE}B");
         process::exit(1);
     }
+
+    let stdout: ConsoleAppender = ConsoleAppender::builder()
+        .encoder(Box::new(JsonEncoder::new()))
+        .build();
+    let log_config = log4rs::config::Config::builder()
+        .appender(Appender::builder().build("stdout", Box::new(stdout)))
+        .build(Root::builder().appender("stdout").build(LevelFilter::Error))
+        .unwrap();
+    log4rs::init_config(log_config).unwrap();
+
     if cfg.generate {
         generate(&cfg).await?
     } else if cfg.sort {
         sort::sort(cfg).await?
-    } else if cfg.check_int_files {
-        check::check_int_files(cfg).await?;
+    } else if cfg.check {
+        check::check(&cfg)?;
     } else {
         eprintln!("One of --generate or --sort must be passed.");
         process::exit(1);
