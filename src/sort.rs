@@ -1,5 +1,6 @@
+use log::{debug, info};
 use std::{
-    collections::BinaryHeap,
+    collections::{BinaryHeap, HashMap},
     fs::{self, File, OpenOptions},
     io::{self, Error, Read, Seek, Write},
     os::unix::fs::MetadataExt,
@@ -17,7 +18,7 @@ struct Block {
 
 impl Ord for Block {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.block.cmp(&other.block)
+        other.block.cmp(&self.block)
     }
 }
 
@@ -25,7 +26,7 @@ impl Eq for Block {}
 
 impl PartialOrd for Block {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.block.partial_cmp(&other.block)
+        other.block.partial_cmp(&self.block)
     }
 }
 
@@ -36,9 +37,7 @@ impl PartialEq for Block {
 }
 
 pub async fn sort(cfg: crate::Config) -> io::Result<()> {
-    println!("Split");
     let mut files = split(&cfg).await?;
-    println!("Sort");
     let mut file = OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -46,58 +45,50 @@ pub async fn sort(cfg: crate::Config) -> io::Result<()> {
 
     let mut heap = BinaryHeap::new();
     let mut buf = [0 as u8; crate::BLOCK_SIZE as usize];
-    println!("Sort loop");
 
     // Populate the heap.
-    for (i, mut f) in files.iter().enumerate() {
-        f.seek(io::SeekFrom::Start(0))?;
-        let n = f.read(&mut buf)?;
+    info!("Populating the heap");
+    for (i, mut f) in &files {
+        f.rewind()?;
+        let _n = f.read(&mut buf)?;
         let b = Block {
-            file_idx: i,
+            file_idx: *i,
             block: buf.clone(),
         };
         heap.push(b);
+        info!("Added from file {}", i);
     }
-    loop {
-        // THE PROBLEM HERE IS THAT I'M POPPING 1 BLOCK, BUT READING N BLOCKS IN THE NEXT ITERATION.
-        // I gotta fill it back with a block coming from the same file from which the popped block came.
-
-        // let mut keep = vec![true; files.len()];
+    while let Some(b) = heap.pop() {
         let last_popped_file_idx: usize;
-        match heap.pop() {
-            Some(b) => {
-                last_popped_file_idx = b.file_idx;
-                file.write(&b.block)?;
-            } //write b to file,
-            None => break, // The heap is empty - we're done.
+
+        last_popped_file_idx = b.file_idx;
+        let n = file.write(&b.block)?;
+        debug!("Wrote {}B from file {}", n, b.file_idx);
+
+        let f: &mut File;
+        match files.get_mut(&last_popped_file_idx) {
+            Some(file) => f = file,
+            None => {
+                files.remove(&last_popped_file_idx);
+                continue;
+            }
         }
-        let n = files[last_popped_file_idx].read(&mut buf)?;
+        let n = f.read(&mut buf)?;
         if n == 0 {
-            files.remove(last_popped_file_idx);
+            files.remove(&last_popped_file_idx);
+            continue;
         }
-        if n != buf.len() {
-            return Result::Err(Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("Expected to read {}B, but read only {}B", buf.len(), n),
-            ));
-        }
+        debug!("Read {n}B");
         let b = Block {
             file_idx: last_popped_file_idx,
             block: buf.clone(),
         };
         heap.push(b);
-        // if !files.is_empty() {
-        //     let mut iter = keep.iter();
-        //     files.retain(|_| *iter.next().unwrap());
-        //     if files.is_empty() {
-        //         break;
-        //     }
-        // }
     }
     Ok(())
 }
 
-async fn split(cfg: &Config) -> io::Result<Vec<File>> {
+async fn split(cfg: &Config) -> io::Result<HashMap<usize, File>> {
     let file = File::open(&cfg.file).map_err(|e| {
         Error::new(
             io::ErrorKind::Other,
@@ -110,9 +101,15 @@ async fn split(cfg: &Config) -> io::Result<Vec<File>> {
             format!("Error getting source file {} metadata: {}", cfg.file, e),
         )
     })?;
-    println!("size: {}", meta.size());
+    info!("Source file size: {}", meta.size());
+    if meta.size() as usize % BLOCK_SIZE != 0 {
+        return Err(Error::new(
+            io::ErrorKind::Other,
+            format!("Source file ({}B) is not page-aligned", meta.size()),
+        ));
+    }
     let no_intermediate_files = meta.size() / cfg.int_file_size as u64;
-    println!("Intermediate files {no_intermediate_files}");
+    info!("Intermediate files {no_intermediate_files}");
     // More workers means more allocations, which can cause memory swaps since the disk is the
     // bottleneck. If a thread is spawned for every core (10 on my mac m1 pro), the split phase
     // takes >400% longer (25s vs 2m 40s).
@@ -129,10 +126,12 @@ async fn split(cfg: &Config) -> io::Result<Vec<File>> {
     let int_filenames =
         (0..no_intermediate_files).map(|i| format!("{}/{}.txt", int_file_dir, i.to_string()));
     for (i, filename) in int_filenames.into_iter().enumerate() {
+        debug!("Writing int. file {i}");
         let b = b.clone();
         let name = cfg.file.to_owned().clone();
         let int_file_size = cfg.int_file_size;
         set.spawn_blocking(move || {
+            debug!("Opening int. file {i}");
             let mut f = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -145,6 +144,7 @@ async fn split(cfg: &Config) -> io::Result<Vec<File>> {
                         format!("Error opening int. file {}: {}", filename, e),
                     )
                 })?;
+            debug!("Opening source file to read file {i}'s contents");
             let mut file = File::open(name.clone()).map_err(|e| {
                 Error::new(
                     io::ErrorKind::Other,
@@ -153,19 +153,14 @@ async fn split(cfg: &Config) -> io::Result<Vec<File>> {
             })?;
 
             let o = i * int_file_size;
-            let offset = io::SeekFrom::Start(o as u64);
-            file.seek(offset)?;
+            info!("Reading source file at offset {}", o);
+            file.seek(io::SeekFrom::Start(o as u64))?;
 
             b.take();
-            let mut buf = vec![0 as u8; int_file_size as usize];
-            // TODO: What if bytes_read < int_file_size? E.g. if the source file doesn't align with
-            // int_file_size.
-            let bytes_read = file.read(buf.as_mut()).map_err(|e| {
-                Error::new(
-                    io::ErrorKind::Other,
-                    format!("Error reading int. file {}: {}", name, e),
-                )
-            })?;
+            let mut buf = vec![0 as u8; int_file_size];
+
+            file.read(&mut buf)?;
+
             let blocks_per_file = buf.len() / crate::BLOCK_SIZE;
             let mut blocks = Vec::with_capacity(blocks_per_file);
             for i in 0..blocks_per_file {
@@ -173,22 +168,30 @@ async fn split(cfg: &Config) -> io::Result<Vec<File>> {
                 let offset = i * crate::BLOCK_SIZE;
                 blocks.push(&buf[offset..offset + crate::BLOCK_SIZE]);
             }
+
+            debug!("Sorting file {i} contents");
             blocks.sort_unstable();
 
             // TODO: check written bytes match the expected val.
-            match f.write(&blocks.concat()) {
+            debug!("Writing to file {i}");
+            let contents = blocks.concat();
+            f.write_all(&contents)?;
+            match f.flush() {
                 Ok(_) => {
                     b.put();
-                    Ok(f)
+                    Ok((i, f))
                 }
                 Err(e) => Err(e),
             }
         });
     }
-    let mut files = Vec::with_capacity(no_intermediate_files as usize);
+    let mut files = HashMap::with_capacity(no_intermediate_files as usize);
+    debug!("Waiting for writer threads");
+
     while let Some(res) = set.join_next().await {
-        let f = res??;
-        files.push(f);
+        let (i, f) = res??;
+        files.insert(i, f);
+        debug!("Joined writer thread")
     }
     Ok(files)
 }

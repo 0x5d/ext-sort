@@ -42,7 +42,7 @@ struct Config {
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
     max_mem: usize,
     /// The directory to create intermediate files.
-    #[arg(short, long, default_value_t = String::from("/int"))] // 2GiB
+    #[arg(short, long, default_value_t = String::from("./int"))] // 2GiB
     int_file_dir: String,
     /// The maxium intermediate file size.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
@@ -59,6 +59,16 @@ async fn main() -> io::Result<()> {
         eprintln!("Max allowed memory must be larger than {BLOCK_SIZE}B");
         process::exit(1);
     }
+
+    let stdout: ConsoleAppender = ConsoleAppender::builder()
+        .encoder(Box::new(JsonEncoder::new()))
+        .build();
+    let log_config = log4rs::config::Config::builder()
+        .appender(Appender::builder().build("stdout", Box::new(stdout)))
+        .build(Root::builder().appender("stdout").build(LevelFilter::Error))
+        .unwrap();
+    log4rs::init_config(log_config).unwrap();
+
     if cfg.generate {
         generate(&cfg).await?
     } else if cfg.sort {
