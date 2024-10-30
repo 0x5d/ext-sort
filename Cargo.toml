@@ -1,5 +1,5 @@
 [package]
-name = "nway-merge-sort"
+name = "ext-sort"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,3 +7,5 @@ edition = "2021"
 clap = { version = "4.5.8", features = ["derive"] }
 rand = { version = "0.8.5", features = ["small_rng"] }
 tokio = { version = "1", features = ["full"] }
+log = "0.4.22"
+log4rs = { version = "1.3.0", features = ["console_appender", "json_encoder"] }
