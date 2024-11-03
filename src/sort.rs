@@ -2,14 +2,17 @@ use log::{debug, info};
 use std::{
     collections::{BinaryHeap, HashMap},
     fs::{self, File, OpenOptions},
-    io::{self, Error, Read, Seek, Write},
+    io::{self, BufReader, BufWriter, Error, Read, Seek, Write},
     os::unix::fs::MetadataExt,
     sync::Arc,
 };
 
 use tokio::task::JoinSet;
 
-use crate::{bucket, Config, BLOCK_SIZE};
+use crate::{
+    bucket::{self, Bucket},
+    Config, BLOCK_SIZE,
+};
 
 struct Block {
     file_idx: usize,
@@ -38,34 +41,34 @@ impl PartialEq for Block {
 
 pub async fn sort(cfg: crate::Config) -> io::Result<()> {
     let mut files = split(&cfg).await?;
-    let mut file = OpenOptions::new()
+    let target_file = OpenOptions::new()
         .write(true)
         .truncate(true)
         .open(&cfg.file)?;
+
+    let mut target_file = BufWriter::with_capacity(BLOCK_SIZE * 256, target_file);
 
     let mut heap = BinaryHeap::new();
     let mut buf = [0 as u8; crate::BLOCK_SIZE as usize];
 
     // Populate the heap.
     info!("Populating the heap");
-    for (i, mut f) in &files {
-        f.rewind()?;
+    for (i, f) in files.iter_mut() {
         let _n = f.read(&mut buf)?;
-        let b = Block {
+        heap.push(Block {
             file_idx: *i,
             block: buf.clone(),
-        };
-        heap.push(b);
+        });
         info!("Added from file {}", i);
     }
     while let Some(b) = heap.pop() {
         let last_popped_file_idx: usize;
 
         last_popped_file_idx = b.file_idx;
-        let n = file.write(&b.block)?;
+        let n = target_file.write(&b.block)?;
         debug!("Wrote {}B from file {}", n, b.file_idx);
 
-        let f: &mut File;
+        let f: &mut BufReader<File>;
         match files.get_mut(&last_popped_file_idx) {
             Some(file) => f = file,
             None => {
@@ -88,7 +91,7 @@ pub async fn sort(cfg: crate::Config) -> io::Result<()> {
     Ok(())
 }
 
-async fn split(cfg: &Config) -> io::Result<HashMap<usize, File>> {
+async fn split(cfg: &Config) -> io::Result<HashMap<usize, BufReader<File>>> {
     let file = File::open(&cfg.file).map_err(|e| {
         Error::new(
             io::ErrorKind::Other,
@@ -125,65 +128,12 @@ async fn split(cfg: &Config) -> io::Result<HashMap<usize, File>> {
     })?;
     let int_filenames =
         (0..no_intermediate_files).map(|i| format!("{}/{}.txt", int_file_dir, i.to_string()));
-    for (i, filename) in int_filenames.into_iter().enumerate() {
+    for (i, int_filename) in int_filenames.into_iter().enumerate() {
         debug!("Writing int. file {i}");
         let b = b.clone();
-        let name = cfg.file.to_owned().clone();
+        let source_filename = cfg.file.to_owned().clone();
         let int_file_size = cfg.int_file_size;
-        set.spawn_blocking(move || {
-            debug!("Opening int. file {i}");
-            let mut f = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .read(true)
-                .truncate(true)
-                .open(&filename)
-                .map_err(|e| {
-                    Error::new(
-                        io::ErrorKind::Other,
-                        format!("Error opening int. file {}: {}", filename, e),
-                    )
-                })?;
-            debug!("Opening source file to read file {i}'s contents");
-            let mut file = File::open(name.clone()).map_err(|e| {
-                Error::new(
-                    io::ErrorKind::Other,
-                    format!("Error opening source file {}: {}", name, e),
-                )
-            })?;
-
-            let o = i * int_file_size;
-            info!("Reading source file at offset {}", o);
-            file.seek(io::SeekFrom::Start(o as u64))?;
-
-            b.take();
-            let mut buf = vec![0 as u8; int_file_size];
-
-            file.read(&mut buf)?;
-
-            let blocks_per_file = buf.len() / crate::BLOCK_SIZE;
-            let mut blocks = Vec::with_capacity(blocks_per_file);
-            for i in 0..blocks_per_file {
-                // TODO: is buf.take(crate::BLOCK_SIZE) better?
-                let offset = i * crate::BLOCK_SIZE;
-                blocks.push(&buf[offset..offset + crate::BLOCK_SIZE]);
-            }
-
-            debug!("Sorting file {i} contents");
-            blocks.sort_unstable();
-
-            // TODO: check written bytes match the expected val.
-            debug!("Writing to file {i}");
-            let contents = blocks.concat();
-            f.write_all(&contents)?;
-            match f.flush() {
-                Ok(_) => {
-                    b.put();
-                    Ok((i, f))
-                }
-                Err(e) => Err(e),
-            }
-        });
+        set.spawn_blocking(move || write_intermediate_file(i, source_filename, int_filename, int_file_size, b));
     }
     let mut files = HashMap::with_capacity(no_intermediate_files as usize);
     debug!("Waiting for writer threads");
@@ -194,4 +144,66 @@ async fn split(cfg: &Config) -> io::Result<HashMap<usize, File>> {
         debug!("Joined writer thread")
     }
     Ok(files)
+}
+
+fn write_intermediate_file(
+    i: usize,
+    source_filename: String,
+    int_filename: String,
+    int_file_size: usize,
+    b: Arc<Bucket>,
+) -> io::Result<(usize, BufReader<File>)> {
+    debug!("Opening int. file {i}");
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .truncate(true)
+        .open(&int_filename)
+        .map_err(|e| {
+            Error::new(
+                io::ErrorKind::Other,
+                format!("Error opening int. file {}: {}", int_filename, e),
+            )
+        })?;
+    debug!("Opening source file to read file {i}'s contents");
+    let mut file = File::open(source_filename.clone()).map_err(|e| {
+        Error::new(
+            io::ErrorKind::Other,
+            format!("Error opening source file {}: {}", source_filename, e),
+        )
+    })?;
+
+    let offset = i * int_file_size;
+    info!("Reading source file at offset {}", offset);
+    file.seek(io::SeekFrom::Start(offset as u64))?;
+
+    b.take();
+    let mut buf = vec![0 as u8; int_file_size];
+
+    file.read(&mut buf)?;
+
+    let blocks_per_file = buf.len() / crate::BLOCK_SIZE;
+    let mut blocks = Vec::with_capacity(blocks_per_file);
+    for i in 0..blocks_per_file {
+        let offset = i * crate::BLOCK_SIZE;
+        blocks.push(&buf[offset..offset + crate::BLOCK_SIZE]);
+    }
+
+    debug!("Sorting file {i} contents");
+    blocks.sort_unstable();
+
+    // TODO: check written bytes match the expected val.
+    debug!("Writing to file {i}");
+    let contents = blocks.concat();
+    // f.write_all(&contents)?;
+
+    match f.write_all(&contents) {
+        Ok(_) => {
+            b.put();
+            f.rewind()?;
+            Ok((i, BufReader::with_capacity(BLOCK_SIZE * 256, f)))
+        }
+        Err(e) => Err(e),
+    }
 }
