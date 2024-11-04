@@ -17,7 +17,7 @@ mod generate;
 mod sort;
 
 const BLOCK_SIZE: usize = 4096;
-const ONE_GIB: u64 = 1073741824;
+const ONE_GIB: usize = 1073741824;
 
 /// Generate & sort big files.
 #[derive(Parser, Debug)]
@@ -37,16 +37,16 @@ struct Config {
     file: String,
     /// The size of the file to generate.
     #[arg(short, long)]
-    size: Option<u64>,
+    size: Option<usize>,
     /// The maxium amount of memory to be used by this program.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
-    max_mem: u64,
+    max_mem: usize,
     /// The directory to create intermediate files.
     #[arg(short, long, default_value_t = String::from("/int"))] // 2GiB
     int_file_dir: String,
     /// The maxium intermediate file size.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
-    int_file_size: u64,
+    int_file_size: usize,
     /// The concurrency level (number of writer threads) during the split phase.
     #[arg(short, long, default_value_t = 2)]
     split_concurrency: i32,

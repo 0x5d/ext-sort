@@ -111,7 +111,7 @@ async fn split(cfg: &Config) -> io::Result<Vec<File>> {
         )
     })?;
     println!("size: {}", meta.size());
-    let no_intermediate_files = meta.size() / cfg.int_file_size;
+    let no_intermediate_files = meta.size() / cfg.int_file_size as u64;
     println!("Intermediate files {no_intermediate_files}");
     // More workers means more allocations, which can cause memory swaps since the disk is the
     // bottleneck. If a thread is spawned for every core (10 on my mac m1 pro), the split phase
@@ -152,8 +152,8 @@ async fn split(cfg: &Config) -> io::Result<Vec<File>> {
                 )
             })?;
 
-            let o = i as u64 * int_file_size;
-            let offset = io::SeekFrom::Start(o);
+            let o = i * int_file_size;
+            let offset = io::SeekFrom::Start(o as u64);
             file.seek(offset)?;
 
             b.take();
