@@ -1,4 +1,10 @@
 use clap::{command, Parser};
+use log::LevelFilter;
+use log4rs::{
+    append::console::ConsoleAppender,
+    config::{Appender, Root},
+    encode::json::JsonEncoder,
+};
 use std::{
     io::{self, ErrorKind},
     process,
@@ -25,7 +31,7 @@ struct Config {
     sort: bool,
     /// If set, will check the intermediate files at the given path.
     #[arg(long, default_value_t = false)]
-    check_int_files: bool,
+    check: bool,
     /// The filepath.
     #[arg(short, long)]
     file: String,
@@ -57,8 +63,8 @@ async fn main() -> io::Result<()> {
         generate(&cfg).await?
     } else if cfg.sort {
         sort::sort(cfg).await?
-    } else if cfg.check_int_files {
-        check::check_int_files(cfg).await?;
+    } else if cfg.check {
+        check::check(&cfg)?;
     } else {
         eprintln!("One of --generate or --sort must be passed.");
         process::exit(1);
