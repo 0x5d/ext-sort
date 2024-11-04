@@ -7,7 +7,32 @@ use std::{
 
 use tokio::task::JoinSet;
 
-use crate::{bucket, Config};
+use crate::{bucket, Config, BLOCK_SIZE};
+
+struct Block {
+    file_idx: usize,
+    block: [u8; BLOCK_SIZE],
+}
+
+impl Ord for Block {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.block.cmp(&other.block)
+    }
+}
+
+impl Eq for Block {}
+
+impl PartialOrd for Block {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.block.partial_cmp(&other.block)
+    }
+}
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.block.eq(&other.block)
+    }
+}
 
 pub async fn sort(cfg: crate::Config) -> io::Result<()> {
     let _res = split(&cfg).await?;
