@@ -30,6 +30,9 @@ struct Config {
     /// The maxium amount of memory to be used by this program.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
     max_mem: u64,
+    /// The maxium intermediate file size.
+    #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
+    int_file_size: u64,
 }
 
 #[tokio::main]
