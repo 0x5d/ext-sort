@@ -41,6 +41,9 @@ struct Config {
     /// The maxium intermediate file size.
     #[arg(short, long, default_value_t = ONE_GIB * 2)] // 2GiB
     int_file_size: u64,
+    /// The concurrency level (number of writer threads) during the split phase.
+    #[arg(short, long, default_value_t = 2)]
+    split_concurrency: i32,
 }
 
 #[tokio::main]
