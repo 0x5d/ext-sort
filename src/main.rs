@@ -9,7 +9,7 @@ use std::{
     io::{self, ErrorKind},
     process,
 };
-use tokio::fs::File;
+use std::fs::File;
 
 mod bucket;
 mod check;
@@ -89,7 +89,7 @@ async fn generate(cfg: &Config) -> io::Result<()> {
             "If --generate is chosen, --size must be set.",
         )),
         Some(s) => {
-            let file = File::create(cfg.file.clone()).await?;
+            let file = File::create(cfg.file.clone())?;
             generate::generate_data(file, s, cfg.max_mem).await
         }
     };

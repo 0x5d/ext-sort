@@ -1,13 +1,14 @@
 use rand::distributions::{Alphanumeric, DistString};
 use rand::SeedableRng;
-use std::io::{self, ErrorKind};
+use std::io::{self, BufWriter, ErrorKind, Write};
 use std::sync::{mpsc, Arc};
+use std::fs::File;
 
 use mpsc::Receiver;
-use tokio::io::AsyncWriteExt;
-use tokio::{fs::File, task::JoinSet};
+use tokio::task::JoinSet;
 
 use crate::bucket::{self, Bucket};
+use crate::BLOCK_SIZE;
 
 /// The value sent by workers to the writer when they have finished processing data.
 const POISON_PILL: &str = "shutdown now";
@@ -22,9 +23,7 @@ pub async fn generate_data(file: File, size_bytes: usize, max_mem: usize) -> io:
     let mut set = JoinSet::new();
     let (tx, rx) = mpsc::channel();
 
-    let writer_handle = tokio::spawn(async move {
-        writer(file, writer_bucket, rx, num_cores).await;
-    });
+    let writer_handle = tokio::spawn(writer(file, writer_bucket, rx, num_cores));
 
     let mut remaining = size_bytes;
 
@@ -61,8 +60,9 @@ pub async fn generate_data(file: File, size_bytes: usize, max_mem: usize) -> io:
     Ok(())
 }
 
-async fn writer(mut file: File, b: Arc<Bucket>, rx: Receiver<String>, n_threads: usize) {
+async fn writer(file: File, b: Arc<Bucket>, rx: Receiver<String>, n_threads: usize) {
     let mut shutdown_counter = 0;
+    let mut file = BufWriter::with_capacity(BLOCK_SIZE * 16384, file);
     loop {
         if shutdown_counter == n_threads {
             return;
@@ -75,7 +75,7 @@ async fn writer(mut file: File, b: Arc<Bucket>, rx: Receiver<String>, n_threads:
                     continue;
                 }
                 b.put();
-                file.write_all(s.as_bytes()).await.unwrap();
+                file.write_all(s.as_bytes()).unwrap();
             }
             Err(e) => {
                 println!("{e}");

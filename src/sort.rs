@@ -4,7 +4,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Error, Read, Seek, Write},
     os::unix::fs::MetadataExt,
-    sync::Arc,
+    sync::{mpsc::{self, Receiver}, Arc},
 };
 
 use tokio::task::JoinSet;
@@ -46,10 +46,13 @@ pub async fn sort(cfg: crate::Config) -> io::Result<()> {
         .truncate(true)
         .open(&cfg.file)?;
 
-    let mut target_file = BufWriter::with_capacity(BLOCK_SIZE * 256, target_file);
+    let target_file = BufWriter::with_capacity(BLOCK_SIZE * 512, target_file);
 
+    let (tx, rx) = mpsc::channel();
+    let writer_handle = tokio::spawn( writer_worker(target_file, rx));
+    
     let mut heap = BinaryHeap::new();
-    let mut buf = [0 as u8; crate::BLOCK_SIZE as usize];
+    let mut buf = [0 as u8; crate::BLOCK_SIZE];
 
     // Populate the heap.
     info!("Populating the heap");
@@ -65,8 +68,8 @@ pub async fn sort(cfg: crate::Config) -> io::Result<()> {
         let last_popped_file_idx: usize;
 
         last_popped_file_idx = b.file_idx;
-        let n = target_file.write(&b.block)?;
-        debug!("Wrote {}B from file {}", n, b.file_idx);
+
+        let _ = tx.send(b.block);
 
         let f: &mut BufReader<File>;
         match files.get_mut(&last_popped_file_idx) {
@@ -88,6 +91,9 @@ pub async fn sort(cfg: crate::Config) -> io::Result<()> {
         };
         heap.push(b);
     }
+    
+    let _ = tx.send(POISON_PILL.to_owned());
+    writer_handle.await?;
     Ok(())
 }
 
@@ -205,5 +211,27 @@ fn write_intermediate_file(
             Ok((i, BufReader::with_capacity(BLOCK_SIZE * 256, f)))
         }
         Err(e) => Err(e),
+    }
+}
+
+
+/// The value sent by workers to the writer when they have finished processing data.
+const POISON_PILL: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
+
+async fn writer_worker(mut file: BufWriter<File>, rx: Receiver<[u8; BLOCK_SIZE]>) {
+    loop {
+        // TODO handle error.
+        match rx.recv() {
+            Ok(s) => {
+                if s == POISON_PILL {
+                    return;
+                }
+                file.write_all(&s).unwrap();
+            }
+            Err(e) => {
+                println!("{e}");
+                return;
+            }
+        }
     }
 }
