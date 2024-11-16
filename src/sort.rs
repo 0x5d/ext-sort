@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     bucket::{self, Bucket},
-    Config, BLOCK_SIZE,
+    BLOCK_SIZE,
 };
 
 struct Block {
@@ -39,12 +39,14 @@ impl PartialEq for Block {
     }
 }
 
-pub async fn sort(cfg: crate::Config) -> io::Result<()> {
-    let mut files = split(&cfg).await?;
-    let target_file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&cfg.file)?;
+pub async fn sort(
+    file: &str,
+    int_file_dir: &str,
+    int_file_size: usize,
+    split_concurrency: i32,
+) -> io::Result<()> {
+    let mut files = split(file, int_file_dir, int_file_size, split_concurrency).await?;
+    let target_file = OpenOptions::new().write(true).truncate(true).open(&file)?;
 
     let mut target_file = BufWriter::with_capacity(BLOCK_SIZE * 256, target_file);
 
@@ -91,17 +93,22 @@ pub async fn sort(cfg: crate::Config) -> io::Result<()> {
     Ok(())
 }
 
-async fn split(cfg: &Config) -> io::Result<HashMap<usize, BufReader<File>>> {
-    let file = File::open(&cfg.file).map_err(|e| {
+async fn split(
+    source_file: &str,
+    int_file_dir: &str,
+    int_file_size: usize,
+    split_concurrency: i32,
+) -> io::Result<HashMap<usize, BufReader<File>>> {
+    let file = File::open(source_file).map_err(|e| {
         Error::new(
             io::ErrorKind::Other,
-            format!("Error opening source file {}: {}", cfg.file, e),
+            format!("Error opening source file {}: {}", source_file, e),
         )
     })?;
     let meta = file.metadata().map_err(|e| {
         Error::new(
             io::ErrorKind::Other,
-            format!("Error getting source file {} metadata: {}", cfg.file, e),
+            format!("Error getting source file {} metadata: {}", source_file, e),
         )
     })?;
     info!("Source file size: {}", meta.size());
@@ -111,19 +118,18 @@ async fn split(cfg: &Config) -> io::Result<HashMap<usize, BufReader<File>>> {
             format!("Source file ({}B) is not page-aligned", meta.size()),
         ));
     }
-    let no_intermediate_files = meta.size() / cfg.int_file_size as u64;
+    let no_intermediate_files = meta.size() / int_file_size as u64;
     info!("Intermediate files {no_intermediate_files}");
     // More workers means more allocations, which can cause memory swaps since the disk is the
     // bottleneck. If a thread is spawned for every core (10 on my mac m1 pro), the split phase
     // takes >400% longer (25s vs 2m 40s).
-    let b = bucket::Bucket::new(cfg.split_concurrency);
+    let b = bucket::Bucket::new(split_concurrency);
     let b = Arc::new(b);
     let mut set = JoinSet::new();
-    let int_file_dir = &cfg.int_file_dir.clone();
     fs::create_dir_all(int_file_dir).map_err(|e| {
         Error::new(
             io::ErrorKind::Other,
-            format!("Error creating int. file dir {}: {}", cfg.int_file_dir, e),
+            format!("Error creating int. file dir {}: {}", int_file_dir, e),
         )
     })?;
     let int_filenames =
@@ -131,9 +137,11 @@ async fn split(cfg: &Config) -> io::Result<HashMap<usize, BufReader<File>>> {
     for (i, int_filename) in int_filenames.into_iter().enumerate() {
         debug!("Writing int. file {i}");
         let b = b.clone();
-        let source_filename = cfg.file.to_owned().clone();
-        let int_file_size = cfg.int_file_size;
-        set.spawn_blocking(move || write_intermediate_file(i, source_filename, int_filename, int_file_size, b));
+        let source_filename = source_file.to_owned().clone();
+        let int_file_size = int_file_size;
+        set.spawn_blocking(move || {
+            write_intermediate_file(i, source_filename, int_filename, int_file_size, b)
+        });
     }
     let mut files = HashMap::with_capacity(no_intermediate_files as usize);
     debug!("Waiting for writer threads");

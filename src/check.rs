@@ -8,17 +8,17 @@ use log::{debug, error, info};
 
 use crate::BLOCK_SIZE;
 
-pub fn check(cfg: &crate::Config) -> io::Result<()> {
-    if !cfg.int_file_dir.is_empty() {
-        check_int_files(cfg)?;
+pub fn check(int_file_dir: &str, file: &str) -> io::Result<()> {
+    if !int_file_dir.is_empty() {
+        check_int_files(int_file_dir)?;
     } else {
         info!("Intermediate files dir wasn't provided. Skipping intermediate files checking.")
     }
-    check_file(Path::new(&cfg.file).to_path_buf())
+    check_file(Path::new(file).to_path_buf())
 }
 
-fn check_int_files(cfg: &crate::Config) -> io::Result<()> {
-    let dir_path = Path::new(&cfg.int_file_dir);
+fn check_int_files(int_file_dir: &str) -> io::Result<()> {
+    let dir_path = Path::new(&int_file_dir);
     let dir = fs::read_dir(dir_path)?;
     for entry in dir {
         let entry = entry?;
