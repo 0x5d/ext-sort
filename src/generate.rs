@@ -1,11 +1,11 @@
 use rand::distributions::{Alphanumeric, DistString};
 use rand::SeedableRng;
-use std::io::{self, ErrorKind};
+use std::fs::File;
+use std::io::{self, Error, ErrorKind, Write};
 use std::sync::{mpsc, Arc};
 
 use mpsc::Receiver;
-use tokio::io::AsyncWriteExt;
-use tokio::{fs::File, task::JoinSet};
+use tokio::task::JoinSet;
 
 use crate::bucket::{self, Bucket};
 
@@ -13,23 +13,29 @@ use crate::bucket::{self, Bucket};
 const POISON_PILL: &str = "shutdown now";
 
 /// Write size_bytes random data into file, using at most max_mem (RAM).
-pub async fn generate_data(file: File, size_bytes: usize, max_mem: usize) -> io::Result<()> {
-    let num_cores = std::thread::available_parallelism().unwrap().get();
+pub async fn generate_data(filepath: &str, size_bytes: usize, max_mem: usize) -> io::Result<()> {
+    if (max_mem as usize) < crate::BLOCK_SIZE {
+        return io::Result::Err(Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "Max allowed memory must be larger than {}B",
+                crate::BLOCK_SIZE
+            ),
+        ));
+    }
+    let file = File::create(filepath)?;
+    let num_cores = std::thread::available_parallelism()?.get();
     let mem_per_core = max_mem / num_cores;
-    let b = bucket::Bucket::new(num_cores as i32);
-    let b = Arc::new(b);
+    let b = Arc::new(bucket::Bucket::new(num_cores as i32));
     let writer_bucket = b.clone();
     let mut set = JoinSet::new();
     let (tx, rx) = mpsc::channel();
 
-    let writer_handle = tokio::spawn(async move {
-        writer(file, writer_bucket, rx, num_cores).await;
-    });
+    let writer_handle = tokio::spawn(writer(file, writer_bucket, rx, num_cores));
 
     let mut remaining = size_bytes;
-
     while remaining > 0 {
-        let to_write = if remaining < mem_per_core {
+        let len = if remaining < mem_per_core {
             remaining
         } else {
             mem_per_core
@@ -38,50 +44,49 @@ pub async fn generate_data(file: File, size_bytes: usize, max_mem: usize) -> io:
         let tx = tx.clone();
         b.take();
         set.spawn_blocking(move || {
-            let s = generate(to_write);
-            if let Err(e) = tx.send(s) {
-                eprintln!("{e}")
-            }
+            tx.send(generate(len)).map_err(|e| {
+                Error::new(
+                    io::ErrorKind::Other,
+                    format!("Could not send to channel: {e}"),
+                )
+            })
         });
-
-        remaining -= to_write;
+        remaining -= len;
     }
-
     while let Some(res) = set.join_next().await {
-        let _ = res?;
+        let _ = res??;
     }
-
     for _ in 0..num_cores {
         tx.send(String::from(POISON_PILL))
             .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
     }
 
-    writer_handle.await?;
-
-    Ok(())
+    writer_handle.await?
 }
 
-async fn writer(mut file: File, b: Arc<Bucket>, rx: Receiver<String>, n_threads: usize) {
-    let mut shutdown_counter = 0;
+async fn writer(
+    mut file: File,
+    b: Arc<Bucket>,
+    rx: Receiver<String>,
+    n_threads: usize,
+) -> io::Result<()> {
+    let mut shutdowns = 0;
     loop {
-        if shutdown_counter == n_threads {
-            return;
+        if shutdowns == n_threads {
+            return Ok(());
         }
-        // TODO handle error.
-        match rx.recv() {
-            Ok(s) => {
-                if s == POISON_PILL {
-                    shutdown_counter += 1;
-                    continue;
-                }
-                b.put();
-                file.write_all(s.as_bytes()).await.unwrap();
-            }
-            Err(e) => {
-                println!("{e}");
-                return;
-            }
+        let s = rx.recv().map_err(|e| {
+            Error::new(
+                io::ErrorKind::Other,
+                format!("Could not receive from channel: {e}"),
+            )
+        })?;
+        if s == POISON_PILL {
+            shutdowns += 1;
+            continue;
         }
+        b.put();
+        file.write_all(s.as_bytes()).unwrap()
     }
 }
 
