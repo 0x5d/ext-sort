@@ -1,6 +1,7 @@
 use rand::distributions::{Alphanumeric, DistString};
 use rand::SeedableRng;
 use core::str;
+use std::alloc::{alloc, dealloc, Layout};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Error};
 use std::os::unix::fs::FileExt;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinSet;
 
-use crate::bucket;
+use crate::{bucket, BLOCK_SIZE, ONE_GIB};
 
 /// Write size_bytes random data into file, using at most max_mem (RAM).
 pub async fn generate_data(filepath: &str, size_bytes: usize, max_mem: usize) -> io::Result<()> {
@@ -41,9 +42,16 @@ pub async fn generate_data(filepath: &str, size_bytes: usize, max_mem: usize) ->
         let filepath = filepath.to_owned().clone();
         set.spawn_blocking(move || {
             let f = OpenOptions::new().write(true).open(filepath)?;
-            let buf = generate(len);
+            let layout = Layout::new::<[u8; 134_217_728]>();
+            unsafe {
+                let ptr = alloc(layout);
+        
+                f.write_all_at(std::slice::from_raw_parts(ptr, 134_217_728), offset as u64)?;
+        
+                dealloc(ptr, layout);
+            }
             writer_bucket.put();
-            f.write_all_at(&buf.as_bytes(), offset as u64)
+            Ok(())
         });
         remaining -= len;
         offset += len;
@@ -52,8 +60,4 @@ pub async fn generate_data(filepath: &str, size_bytes: usize, max_mem: usize) ->
         let _ = res??;
     }
     file.set_len(size_bytes as u64)
-}
-
-fn generate(len: usize) -> String {
-    Alphanumeric.sample_string(&mut rand::rngs::SmallRng::from_entropy(), len)
 }
