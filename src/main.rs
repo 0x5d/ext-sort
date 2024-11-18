@@ -5,8 +5,7 @@ use log4rs::{
     config::{Appender, Root},
     encode::json::JsonEncoder,
 };
-use std::io::{self, Error};
-use tokio::fs::File;
+use std::io;
 
 mod bucket;
 mod check;
@@ -32,14 +31,7 @@ async fn main() -> io::Result<()> {
 
     match &cli.command {
         cli::Commands::Gen(args) => {
-            if (args.max_mem as usize) < BLOCK_SIZE {
-                return io::Result::Err(Error::new(
-                    io::ErrorKind::Other,
-                    format!("Max allowed memory must be larger than {BLOCK_SIZE}B"),
-                ));
-            }
-            let file = File::create(args.file.clone()).await?;
-            generate::generate_data(file, args.size, args.max_mem).await
+            generate::generate_data(&args.file, args.size, args.max_mem).await
         }
         cli::Commands::Sort(args) => {
             sort::sort(
