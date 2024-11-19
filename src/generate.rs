@@ -1,5 +1,6 @@
 use rand::distributions::{Alphanumeric, DistString};
 use rand::SeedableRng;
+use std::cmp::min;
 use std::fs::File;
 use std::io::{self, Error, ErrorKind, Write};
 use std::sync::{mpsc, Arc};
@@ -33,26 +34,56 @@ pub async fn generate_data(filepath: &str, size_bytes: usize, max_mem: usize) ->
 
     let writer_handle = tokio::spawn(writer(file, writer_bucket, rx, num_cores));
 
+    let min_len_per_core = size_bytes / num_cores;
     let mut remaining = size_bytes;
-    while remaining > 0 {
-        let len = if remaining < mem_per_core {
-            remaining
-        } else {
-            mem_per_core
-        };
-
+    for _ in 0..num_cores {
         let tx = tx.clone();
-        b.take();
+        let b = b.clone();
+        let mut core_len = if remaining < min_len_per_core {
+            min_len_per_core + remaining
+        } else {
+            min_len_per_core
+        };
+        remaining -= core_len;
         set.spawn_blocking(move || {
-            tx.send(generate(len)).map_err(|e| {
-                Error::new(
-                    io::ErrorKind::Other,
-                    format!("Could not send to channel: {e}"),
-                )
-            })
+            while core_len > 0 {
+                let len = min(core_len, mem_per_core);
+                core_len -= len;
+                // b.take();
+                let res = tx.send(generate(len)).map_err(|e| {
+                    Error::new(
+                        io::ErrorKind::Other,
+                        format!("Could not send to channel: {e}"),
+                    )
+                });
+                if let Err(_) = &res {
+                    return res;
+                }
+            }
+            Ok(())
         });
-        remaining -= len;
     }
+
+    // let mut remaining = size_bytes;
+    // while remaining > 0 {
+    //     let len = if remaining < mem_per_core {
+    //         remaining
+    //     } else {
+    //         mem_per_core
+    //     };
+
+    //     let tx = tx.clone();
+    //     b.take();
+    //     set.spawn_blocking(move || {
+    //         tx.send(generate(len)).map_err(|e| {
+    //             Error::new(
+    //                 io::ErrorKind::Other,
+    //                 format!("Could not send to channel: {e}"),
+    //             )
+    //         })
+    //     });
+    //     remaining -= len;
+    // }
     while let Some(res) = set.join_next().await {
         let _ = res??;
     }
@@ -85,7 +116,7 @@ async fn writer(
             shutdowns += 1;
             continue;
         }
-        b.put();
+        // b.put();
         file.write_all(s.as_bytes()).unwrap()
     }
 }
