@@ -1,13 +1,16 @@
 use rand::distributions::{Alphanumeric, DistString};
+use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use std::cmp::min;
 use std::fs::File;
 use std::io::{self, Error, ErrorKind, Write};
+use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc};
 
 use mpsc::Receiver;
 use tokio::task::JoinSet;
 
-use crate::bucket::{self, Bucket};
+use crate::bucket::Bucket;
 
 /// The value sent by workers to the writer when they have finished processing data.
 const POISON_PILL: &str = "shutdown now";
@@ -16,7 +19,7 @@ const POISON_PILL: &str = "shutdown now";
 pub async fn generate_data(filepath: &str, size_bytes: usize, max_mem: usize) -> io::Result<()> {
     if (max_mem as usize) < crate::BLOCK_SIZE {
         return io::Result::Err(Error::new(
-            io::ErrorKind::Other,
+            ErrorKind::Other,
             format!(
                 "Max allowed memory must be larger than {}B",
                 crate::BLOCK_SIZE
@@ -26,70 +29,49 @@ pub async fn generate_data(filepath: &str, size_bytes: usize, max_mem: usize) ->
     let file = File::create(filepath)?;
     let num_cores = std::thread::available_parallelism()?.get();
     let mem_per_core = max_mem / num_cores;
-    let b = Arc::new(bucket::Bucket::new(num_cores as i32));
+    let b = Arc::new(Bucket::new(num_cores as i32));
     let writer_bucket = b.clone();
     let mut set = JoinSet::new();
     let (tx, rx) = mpsc::channel();
 
-    let writer_handle = tokio::spawn(writer(file, writer_bucket, rx, num_cores));
+    let writer_handle = tokio::spawn(writer(file, writer_bucket, rx));
 
     let mut remaining = size_bytes;
     while remaining > 0 {
-        let len = if remaining < mem_per_core {
-            remaining
-        } else {
-            mem_per_core
-        };
-
+        let len = min(remaining, mem_per_core);
+        remaining -= len;
         let tx = tx.clone();
         b.take();
-        set.spawn_blocking(move || {
-            tx.send(generate(len)).map_err(|e| {
-                Error::new(
-                    io::ErrorKind::Other,
-                    format!("Could not send to channel: {e}"),
-                )
-            })
-        });
-        remaining -= len;
+        set.spawn_blocking(move || generate(tx, len));
     }
+
     while let Some(res) = set.join_next().await {
         let _ = res??;
     }
-    for _ in 0..num_cores {
-        tx.send(String::from(POISON_PILL))
-            .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
-    }
+    tx.send(String::from(POISON_PILL))
+        .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
 
     writer_handle.await?
 }
 
-async fn writer(
-    mut file: File,
-    b: Arc<Bucket>,
-    rx: Receiver<String>,
-    n_threads: usize,
-) -> io::Result<()> {
-    let mut shutdowns = 0;
+async fn writer(mut file: File, b: Arc<Bucket>, rx: Receiver<String>) -> io::Result<()> {
     loop {
-        if shutdowns == n_threads {
-            return Ok(());
-        }
         let s = rx.recv().map_err(|e| {
             Error::new(
-                io::ErrorKind::Other,
+                ErrorKind::Other,
                 format!("Could not receive from channel: {e}"),
             )
         })?;
         if s == POISON_PILL {
-            shutdowns += 1;
-            continue;
+            return Ok(());
         }
         b.put();
-        file.write_all(s.as_bytes()).unwrap()
+        file.write_all(s.as_bytes())?;
     }
 }
 
-fn generate(len: usize) -> String {
-    Alphanumeric.sample_string(&mut rand::rngs::SmallRng::from_entropy(), len)
+fn generate(tx: Sender<String>, len: usize) -> io::Result<()> {
+    let rand_str = Alphanumeric.sample_string(&mut SmallRng::from_entropy(), len);
+    tx.send(rand_str)
+        .map_err(|e| Error::new(ErrorKind::Other, format!("Could not send to channel: {e}")))
 }
